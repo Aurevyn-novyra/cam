@@ -1,0 +1,203 @@
+<!doctype html> <html lang="en"> <head> <meta charset="utf-8" /> <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" /> <title>Premium Camera — Web App</title> <link rel="stylesheet" href="style.css"> <!-- Intentional no external fonts or libraries to keep app fully offline and performant --> <meta name="theme-color" content="#0b0b0b"> </head> <body> <!-- Root app container: sized to viewport, uses CSS to ensure fullscreen mobile-safe layout --> <div id="app" class="app" role="application" aria-label="Premium Camera Web App">
+  <!-- Top bar: status, switch camera, flash simulation, resolution indicator -->
+<header class="top-bar" aria-hidden="false">
+  <div class="top-left">
+    <div id="cameraFacing" class="badge">Rear</div>
+    <div id="resolutionBadge" class="badge">1080p</div>
+  </div>
+
+  <div class="top-center" id="sceneInfo" aria-live="polite">
+    <!-- Dynamic scene hints: FPS, exposure suggestions, dropped frames -->
+    <span id="fpsDisplay">60fps</span>
+    <span id="latencyHint" class="muted">—</span>
+  </div>
+
+  <div class="top-right">
+    <button id="switchCameraBtn" class="icon-btn" aria-label="Switch camera" title="Switch camera">
+      <!-- Inline SVG icon: swap -->
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+        <path d="M4 7h12l-3.5 4H20V7h2v10h-2v-4h-7.5L16 17H4z" fill="currentColor"/>
+      </svg>
+    </button>
+    <button id="settingsBtn" class="icon-btn" aria-label="Open settings" title="Settings">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+        <path d="M12 8.5A3.5 3.5 0 1 0 12 15.5 3.5 3.5 0 0 0 12 8.5zm7.43 3.5a7.9 7.9 0 0 0-.08-1l2.11-1.65-2-3.46-2.5 1a7.7 7.7 0 0 0-1.7-.98L14 2h-4l-.26 3.91c-.62.18-1.2.46-1.73.82l-2.5-1L3.26 10l2.11 1.65a7.9 7.9 0 0 0-.08 1c0 .34.03.67.08 1L3.26 15.3l2 3.46 2.5-1c.53.36 1.11.64 1.73.82L10 22h4l.26-3.91c.62-.18 1.2-.46 1.73-.82l2.5 1 2-3.46-2.11-1.65c.05-.33.08-.66.08-1z" fill="currentColor"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<!-- Camera viewport -->
+<main class="camera-area" id="cameraArea" role="main">
+  <!-- Hidden native video element used as the fast camera source. Kept muted and plays inline.
+       We render through a canvas for efficient GPU-accelerated compositing and real-time filters. -->
+  <video id="cameraVideo" playsinline muted autoplay crossorigin="anonymous" style="display:none;"></video>
+
+  <!-- Canvas used as the final composited preview. This is the element users interact with.
+       We size and scale canvas to devicePixelRatio for crisp rendering; JS will manage that. -->
+  <canvas id="previewCanvas" class="preview-canvas" width="1920" height="1080" aria-label="Camera preview"></canvas>
+
+  <!-- Overlay layer for gestures, focus indicator, shutter animation, and UI hints.
+       Kept separate so UI animations can use GPU-only transforms (translate/scale/opacity). -->
+  <div id="overlay" class="overlay" role="region" aria-hidden="false">
+
+    <!-- Focus ring: animated on tap-to-focus -->
+    <div id="focusRing" class="focus-ring" aria-hidden="true"></div>
+
+    <!-- Touch gesture hint: swipe filters -->
+    <div id="gestureHint" class="gesture-hint muted">Swipe left/right for filters</div>
+
+    <!-- Shutter flash overlay (animated opacity) -->
+    <div id="shutterFlash" class="shutter-flash" aria-hidden="true"></div>
+
+    <!-- Tap area for camera controls: provides large hit target for mobile touch -->
+    <div id="touchLayer" class="touch-layer" role="button" tabindex="0" aria-label="Camera touch layer"></div>
+
+  </div>
+</main>
+
+<!-- Right side vertical controls (DSLR-style sliders stacked vertically) -->
+<aside class="right-controls" aria-hidden="false">
+  <div class="control-group">
+    <label class="control-label">Zoom</label>
+    <input id="zoomSlider" class="slider vertical" type="range" min="1" max="8" step="0.01"
+           aria-label="Zoom control (pinch also supported)" value="1" />
+    <div id="zoomPresetList" class="zoom-presets">
+      <button class="preset" data-zoom="1">1x</button>
+      <button class="preset" data-zoom="2">2x</button>
+      <button class="preset" data-zoom="3">3x</button>
+      <button class="preset" data-zoom="4">4x</button>
+      <button class="preset" data-zoom="5">5x</button>
+    </div>
+  </div>
+
+  <div class="control-group">
+    <label class="control-label">Exposure</label>
+    <input id="exposureSlider" class="slider vertical" type="range" min="-2" max="2" step="0.01"
+           aria-label="Exposure compensation" value="0" />
+  </div>
+
+  <div class="control-group">
+    <label class="control-label">Focus (manual)</label>
+    <input id="focusSlider" class="slider vertical" type="range" min="0" max="1" step="0.001"
+           aria-label="Manual focus" value="0.5" />
+  </div>
+
+  <div class="control-group">
+    <label class="control-label">Filter</label>
+    <!-- Filter presets shown as small film-like chips; swipe left/right to browse -->
+    <div id="filterCarousel" class="filter-carousel" role="listbox" aria-label="Filter presets">
+      <button class="filter-chip" data-filter="none" role="option" aria-selected="true">Natural</button>
+      <button class="filter-chip" data-filter="cinema">Cinema</button>
+      <button class="filter-chip" data-filter="bw">B&W</button>
+      <button class="filter-chip" data-filter="vivid">Vivid</button>
+      <button class="filter-chip" data-filter="film">Film Grain</button>
+    </div>
+  </div>
+</aside>
+
+<!-- Bottom controls: main capture controls and small toggles -->
+<footer class="bottom-bar" aria-hidden="false">
+  <div class="bottom-left">
+    <button id="galleryBtn" class="pill-btn" aria-label="Open gallery" title="Gallery">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14l4-4h12a2 2 0 0 0 2-2z" fill="currentColor"/></svg>
+      <span class="label">Gallery</span>
+    </button>
+    <div class="toggle-group">
+      <label class="small-toggle" title="Grid overlay">
+        <input id="gridToggle" type="checkbox" />
+        <span>Grid</span>
+      </label>
+      <label class="small-toggle" title="Film grain">
+        <input id="grainToggle" type="checkbox" />
+        <span>Grain</span>
+      </label>
+    </div>
+  </div>
+
+  <div class="capture-area" aria-hidden="false">
+    <button id="modePhoto" class="mode-btn active" aria-pressed="true">PHOTO</button>
+    <button id="modeVideo" class="mode-btn" aria-pressed="false">VIDEO</button>
+
+    <!-- Shutter button (center) -->
+    <div class="shutter-wrap">
+      <button id="captureBtn" class="shutter-btn" aria-label="Capture photo" title="Capture">
+        <span class="shutter-inner"></span>
+      </button>
+
+      <!-- Video record indicator around shutter when recording -->
+      <div id="recordRing" class="record-ring" aria-hidden="true"></div>
+    </div>
+
+    <!-- Secondary actions -->
+    <div class="secondary-actions">
+      <button id="switchAspect" class="icon-btn" aria-label="Switch aspect ratio" title="Aspect ratio">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 7h18v2H3zM3 11h18v2H3zM3 15h18v2H3z" fill="currentColor"/></svg>
+      </button>
+      <button id="timerBtn" class="icon-btn" aria-label="Set timer" title="Timer">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M15.07 1L14 2.07l2.93 2.93 1.07-1.07L15.07 1zM12 8a6 6 0 1 0 6 6 6 6 0 0 0-6-6zm1 7h-2V9h2z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="bottom-right">
+    <div id="recordTimer" class="muted">00:00</div>
+  </div>
+</footer>
+
+<!-- Hidden accessible file output anchor for downloads of images/videos -->
+<a id="downloadLink" style="display:none" download></a>
+
+<!-- Minimal settings drawer (populated by JS) -->
+<div id="settingsDrawer" class="settings-drawer" aria-hidden="true">
+  <div class="settings-header">
+    <h3>Settings</h3>
+    <button id="closeSettings" class="icon-btn" aria-label="Close settings">&times;</button>
+  </div>
+  <div class="settings-body">
+    <label class="settings-row">
+      <span>Preferred FPS</span>
+      <select id="fpsSelect" aria-label="Preferred frames per second">
+        <option value="60">60</option>
+        <option value="30">30</option>
+        <option value="24">24</option>
+      </select>
+    </label>
+
+    <label class="settings-row">
+      <span>Max Zoom (practical)</span>
+      <select id="maxZoomSelect" aria-label="Max zoom">
+        <option value="5">5x (recommended)</option>
+        <option value="8">8x (experimental)</option>
+      </select>
+    </label>
+
+    <label class="settings-row">
+      <span>Shutter Sound</span>
+      <input id="shutterSoundToggle" type="checkbox" checked />
+    </label>
+
+    <label class="settings-row">
+      <span>Save Format</span>
+      <select id="saveFormat" aria-label="Save format">
+        <option value="jpg">JPG</option>
+        <option value="png">PNG</option>
+        <option value="webp">WebP (best size)</option>
+      </select>
+    </label>
+
+    <label class="settings-row">
+      <span>Stabilization</span>
+      <select id="stabilizationSelect" aria-label="Stabilization">
+        <option value="auto">Auto</option>
+        <option value="off">Off</option>
+        <option value="on">On</option>
+      </select>
+    </label>
+  </div>
+</div>
+
+<!-- Small inline templates for accessible announcements and errors (manipulated by JS) -->
+<div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
+<div id="errorToast" class="toast" role="alert" aria-live="assertive" hidden></div>
+</div> <!-- The main script is separate (script.js) per the requested file structure. script.js will wire all the interactive behavior, gestures, canvas rendering, media capture, and performance tuning. --> <script src="script.js" defer></script> </body> </html>
